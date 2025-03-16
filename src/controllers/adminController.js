@@ -45,11 +45,44 @@ exports.adminLogin = async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        const admin = await Admin.findOne({ email });
-        if (!admin || admin.password !== password) {
-            return res.status(401).json({ message: 'Invalid credentials' });
+        // Check if the user exists in the User collection
+        const user = await User.findOne({ email });
+        if (user) {
+            // If user exists, check password and IMEI
+            if (user.password !== password) {
+                return res.status(401).json({ message: 'Invalid credentials' });
+            }
+            if (!user.imei) {
+                return res.status(400).json({ message: 'IMEI number is missing for user' });
+            }
+            return res.status(200).json({
+                message: 'User logged in successfully',
+                user: {
+                    email: user.email,
+                    imei: user.imei,
+                    name: user.name,
+                },
+            });
         }
-        res.status(200).json({ message: 'Admin logged in successfully' });
+
+        // If not found in User, check in Admin collection
+        const admin = await Admin.findOne({ email });
+        if (admin) {
+            // If admin exists, check password
+            if (admin.password !== password) {
+                return res.status(401).json({ message: 'Invalid credentials' });
+            }
+            return res.status(200).json({
+                message: 'Admin logged in successfully',
+                admin: {
+                    email: admin.email,
+                    name: admin.name,
+                },
+            });
+        }
+
+        // If neither User nor Admin is found
+        return res.status(404).json({ message: 'User or Admin not found' });
     } catch (error) {
         res.status(500).json({ message: 'Error logging in', error: error.message });
     }

@@ -9,13 +9,20 @@ const connectDB = require('./src/config/db'); // Import the connectDB function
 
 const app = express();
 
+// CORS Configuration
+const corsOptions = {
+    origin: 'http://localhost:3000', // Replace with your frontend's URL
+    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
+    credentials: true, // Allow cookies and credentials
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Handle preflight requests
+
 // Middleware
-app.use(cors());
 app.use(bodyParser.json());
 
 // Routes
 app.use('/api/admin', adminRoutes);
-
 app.use('/api/user', userRoutes);
 
 // Database connection
