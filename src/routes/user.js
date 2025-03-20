@@ -18,4 +18,6 @@ router.get('/:id/devices', userController.getUserDevices);
 // Route to fetch device data from BodyTrace API
 router.get('/device/:imei', userController.getDeviceData);
 
+router.post("/list/user",userController.listUsers)
+
 module.exports = router;

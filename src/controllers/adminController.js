@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Admin = require('../models/Admin');
+const bcrypt = require('bcrypt'); // Import bcrypt for password comparison
 
 // Create a new admin user
 exports.createUser = async (req, res) => {
@@ -40,21 +41,31 @@ exports.getUserByImei = async (req, res) => {
     }
 };
 
-// Admin login
+
 exports.adminLogin = async (req, res) => {
     const { email, password } = req.body;
 
+    console.log("Login request received with email:", email); // Log the incoming request
+
     try {
         // Check if the user exists in the User collection
+        console.log("Checking User collection for email:", email);
         const user = await User.findOne({ email });
+
+        console.log("User found in User collection:", user); // Log the user object if found
         if (user) {
-            // If user exists, check password and IMEI
-            if (user.password !== password) {
+            console.log("User exists, checking password and IMEI...");
+            // Use bcrypt to compare the hashed password with the plain text password
+            const isPasswordMatch = await bcrypt.compare(password, user.password);
+            if (!isPasswordMatch) {
+                console.log("Password mismatch for user:", email);
                 return res.status(401).json({ message: 'Invalid credentials' });
             }
             if (!user.imei) {
+                console.log("IMEI number is missing for user:", email);
                 return res.status(400).json({ message: 'IMEI number is missing for user' });
             }
+            console.log("User login successful:", email);
             return res.status(200).json({
                 message: 'User logged in successfully',
                 user: {
@@ -66,12 +77,18 @@ exports.adminLogin = async (req, res) => {
         }
 
         // If not found in User, check in Admin collection
+        console.log("User not found in User collection, checking Admin collection for email:", email);
         const admin = await Admin.findOne({ email });
+
+        console.log("Admin found in Admin collection:", admin); // Log the admin object if found
         if (admin) {
-            // If admin exists, check password
+            console.log("Admin exists, checking password...");
+            // Use normal string comparison for admin password
             if (admin.password !== password) {
+                console.log("Password mismatch for admin:", email);
                 return res.status(401).json({ message: 'Invalid credentials' });
             }
+            console.log("Admin login successful:", email);
             return res.status(200).json({
                 message: 'Admin logged in successfully',
                 admin: {
@@ -82,8 +99,10 @@ exports.adminLogin = async (req, res) => {
         }
 
         // If neither User nor Admin is found
+        console.log("No User or Admin found for email:", email);
         return res.status(404).json({ message: 'User or Admin not found' });
     } catch (error) {
+        console.error("Error occurred during login:", error); // Log the error
         res.status(500).json({ message: 'Error logging in', error: error.message });
     }
 };

@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const axios = require('axios'); // Import axios for making HTTP requests
 
 // Function to create a new user
 exports.createUser = async (req, res) => {
@@ -128,9 +129,44 @@ exports.getDeviceData = async (req, res) => {
         res.json(processedData);
 
     } catch (error) {
-        console.error('Proxy error:', error.message);
+        console.error('Proxy error:', error);
         res.status(error.response?.status || 500).json({
             error: error.response?.data?.error || 'Proxy error'
         });
+    }
+};
+
+// Function to list users with pagination, sorting, and filtering
+exports.listUsers = async (req, res) => {
+    try {
+        const { page = 1, limit = 10, sortBy = 'name', order = 'asc', search = '' } = req.body;
+
+        // Convert `page` and `limit` to numbers
+        const pageNumber = parseInt(page, 10);
+        const limitNumber = parseInt(limit, 10);
+
+        // Build the query for filtering
+        const query = search
+            ? { $or: [{ name: { $regex: search, $options: 'i' } }, { email: { $regex: search, $options: 'i' } }] }
+            : {};
+
+        // Calculate the total number of users
+        const totalUsers = await User.countDocuments(query);
+
+        // Fetch users with pagination, sorting, and filtering
+        const users = await User.find(query)
+            .sort({ [sortBy]: order === 'asc' ? 1 : -1 }) // Sort by the specified field
+            .skip((pageNumber - 1) * limitNumber) // Skip users for pagination
+            .limit(limitNumber); // Limit the number of users per page
+
+        res.status(200).json({
+            totalUsers,
+            totalPages: Math.ceil(totalUsers / limitNumber),
+            currentPage: pageNumber,
+            users,
+        });
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ message: 'Error fetching users', error: error.message });
     }
 };
