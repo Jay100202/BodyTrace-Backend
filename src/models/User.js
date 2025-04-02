@@ -18,9 +18,16 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    resetToken: String, // Token for password reset
+    resetTokenExpiry: Date,
     createdAt: {
         type: Date,
         default: Date.now
+    },
+    type: {
+        type: String,
+        default: 'user', // Static type field for User
+        immutable: true // Prevent changes to this field
     }
 });
 

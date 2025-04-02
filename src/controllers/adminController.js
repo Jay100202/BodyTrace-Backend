@@ -72,6 +72,7 @@ exports.adminLogin = async (req, res) => {
                     email: user.email,
                     imei: user.imei,
                     name: user.name,
+                    type: user.type,
                 },
             });
         }
@@ -91,9 +92,10 @@ exports.adminLogin = async (req, res) => {
             console.log("Admin login successful:", email);
             return res.status(200).json({
                 message: 'Admin logged in successfully',
-                admin: {
+                user: {
                     email: admin.email,
                     name: admin.name,
+                    type: admin.type,
                 },
             });
         }

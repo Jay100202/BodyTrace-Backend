@@ -12,12 +12,24 @@ router.post('/login', userController.loginUser);
 // Route to fetch user data
 router.get('/:id', userController.getUserData);
 
+router.put("/users/:id", userController.editUser)
+
 // Route to fetch device data for a user
-router.get('/:id/devices', userController.getUserDevices);
+router.get('/:id/getuserbyid', userController.getUserbyID);
 
 // Route to fetch device data from BodyTrace API
 router.get('/device/:imei', userController.getDeviceData);
 
-router.post("/list/user",userController.listUsers)
+router.post("/list/user", userController.listUsers)
+
+router.post("/device/:imei/filtered-data", userController.getFilteredDeviceData)
+
+router.post("/device/:imei/downloadCSV", userController.generateDeviceDataCsv)
+
+router.post("/request-password-reset", userController.requestPasswordReset);
+
+router.post("/reset-password", userController.resetPassword);
+
+router.post("/change-password", userController.changePassword);
 
 module.exports = router;

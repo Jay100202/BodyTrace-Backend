@@ -13,6 +13,11 @@ const adminSchema = new mongoose.Schema({
     password: {
         type: String,
         required: true
+    },
+    type: {
+        type: String,
+        default: 'admin', // Static type field for Admin
+        immutable: true // Prevent changes to this field
     }
 }, { timestamps: true });
 
