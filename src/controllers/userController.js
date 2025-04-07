@@ -396,15 +396,15 @@ exports.getFilteredDeviceData = async (req, res) => {
 
 exports.generateDeviceDataCsv = async (req, res) => {
     try {
-        const { imei } = req.params;
+        const { imeis } = req.body; // Accept IMEIs as an array in the request body
         const { startDate, endDate, page = 1, limit = 10, sortBy = 'ts', order = 'asc' } = req.body;
 
-        console.log('Request Parameters:', { imei, startDate, endDate, page, limit, sortBy, order });
+        console.log('Request Parameters:', { imeis, startDate, endDate, page, limit, sortBy, order });
 
-        // Validate IMEI (15 digits)
-        if (!/^\d{15}$/.test(imei)) {
-            console.error('Invalid IMEI format:', imei);
-            return res.status(400).json({ error: 'Invalid IMEI format' });
+        // Validate IMEIs
+        if (!Array.isArray(imeis) || imeis.some(imei => !/^\d{15}$/.test(imei))) {
+            console.error('Invalid IMEI format:', imeis);
+            return res.status(400).json({ error: 'Invalid IMEI format. Ensure all IMEIs are 15-digit numbers.' });
         }
 
         // Get credentials from environment variables
@@ -413,63 +413,69 @@ exports.generateDeviceDataCsv = async (req, res) => {
 
         console.log('Auth Token Generated');
 
-        // Build query parameters
-        const params = {};
-        if (startDate && endDate) {
-            const startTimestamp = new Date(startDate).getTime();
-            const endTimestamp = new Date(endDate).getTime();
+        const allFilteredData = [];
 
-            if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
-                console.error('Invalid date format:', { startDate, endDate });
-                return res.status(400).json({ error: 'Invalid date format' });
+        // Fetch and process data for each IMEI
+        for (const imei of imeis) {
+            const params = {};
+            if (startDate && endDate) {
+                const startTimestamp = new Date(startDate).getTime();
+                const endTimestamp = new Date(endDate).getTime();
+
+                if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
+                    console.error('Invalid date format:', { startDate, endDate });
+                    return res.status(400).json({ error: 'Invalid date format' });
+                }
+
+                params.from = startTimestamp;
+                params.to = endTimestamp;
+
+                console.log('Date Range:', { startTimestamp, endTimestamp });
             }
 
-            params.from = startTimestamp;
-            params.to = endTimestamp;
+            console.log(`Fetching data for IMEI: ${imei}`);
 
-            console.log('Date Range:', { startTimestamp, endTimestamp });
+            const response = await axios.get(
+                `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
+                {
+                    params,
+                    headers: {
+                        'Authorization': `Basic ${authToken}`,
+                        'Accept': 'application/json',
+                        'User-Agent': 'Your-App-Name/1.0',
+                        'Origin': 'https://console.bodytrace.com',
+                        'Referer': 'https://console.bodytrace.com/',
+                    },
+                }
+            );
+
+            console.log(`API Response Data for IMEI ${imei}:`, response.data);
+
+            // Process the response to include human-readable date-time and additional data
+            const processedData = response.data.map(entry => ({
+                imei, // Include the IMEI in the response
+                dateTime: new Date(entry.ts).toISOString(),
+                batteryVoltage: entry.batteryVoltage,
+                signalStrength: entry.signalStrength,
+                rssi: entry.rssi,
+                deviceId: entry.deviceId,
+                weight: entry.values?.weight,
+                unit: entry.values?.unit,
+                tare: entry.values?.tare,
+            }));
+
+            console.log(`Processed Data for IMEI ${imei}:`, processedData);
+
+            // Filter data to include only entries with the `values` field
+            const filteredData = processedData.filter(entry => entry.weight !== undefined);
+
+            console.log(`Filtered Data for IMEI ${imei}:`, filteredData);
+
+            allFilteredData.push(...filteredData);
         }
 
-        console.log('Query Parameters:', params);
-
-        // Fetch all data from BodyTrace API
-        const response = await axios.get(
-            `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
-            {
-                params,
-                headers: {
-                    'Authorization': `Basic ${authToken}`,
-                    'Accept': 'application/json',
-                    'User-Agent': 'Your-App-Name/1.0',
-                    'Origin': 'https://console.bodytrace.com',
-                    'Referer': 'https://console.bodytrace.com/',
-                },
-            }
-        );
-
-        console.log('API Response Data:', response.data);
-
-        // Process the response to include human-readable date-time and additional data
-        const processedData = response.data.map(entry => ({
-            dateTime: new Date(entry.ts).toISOString(),
-            batteryVoltage: entry.batteryVoltage,
-            signalStrength: entry.signalStrength,
-            rssi: entry.rssi,
-            deviceId: entry.deviceId,
-            weight: entry.values?.weight,
-            unit: entry.values?.unit,
-            tare: entry.values?.tare,
-        }));
-
-        console.log('Processed Data:', processedData);
-
-        // Filter data to include only entries with the `values` field
-        const filteredData = processedData.filter(entry => entry.weight !== undefined);
-
-        console.log('Filtered Data:', filteredData);
-
-        // Sort the filtered data
-        const sortedData = filteredData.sort((a, b) => {
+        // Sort the combined data
+        const sortedData = allFilteredData.sort((a, b) => {
             if (order === 'asc') {
                 return a[sortBy] > b[sortBy] ? 1 : -1;
             } else {
@@ -486,7 +492,7 @@ exports.generateDeviceDataCsv = async (req, res) => {
         console.log('Paginated Data for CSV:', paginatedData);
 
         // Generate CSV
-        const fields = ['dateTime', 'batteryVoltage', 'signalStrength', 'rssi', 'deviceId', 'weight', 'unit', 'tare'];
+        const fields = ['imei', 'dateTime', 'batteryVoltage', 'signalStrength', 'rssi', 'deviceId', 'weight', 'unit', 'tare'];
         const opts = { fields };
         const parser = new Parser(opts);
         const csv = parser.parse(paginatedData);
@@ -495,7 +501,7 @@ exports.generateDeviceDataCsv = async (req, res) => {
 
         // Send the CSV file as a response
         res.header('Content-Type', 'text/csv');
-        res.attachment(`device_data_${imei}_page_${page}.csv`);
+        res.attachment(`device_data_page_${page}.csv`);
         res.send(csv);
     } catch (error) {
         console.error('Error generating CSV for device data:', error.message);
