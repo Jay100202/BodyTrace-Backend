@@ -10,12 +10,14 @@ const { Parser } = require('json2csv'); // Import json2csv for CSV generation
 exports.createUser = async (req, res) => {
     const { name, email, password, imei } = req.body;
 
+    console.log('Request Body:', req.body);
+
     try {
         // Hash the password
         const hashedPassword = await bcrypt.hash(password, 10);
 
         // Create a new user
-        const newUser = new User({ name, email, password: hashedPassword, imei });
+        const newUser = new User({ name, email, password: hashedPassword, imei: Array.isArray(imei) ? imei : [imei] });
         await newUser.save();
 
         // Generate a JWT token
@@ -45,6 +47,7 @@ exports.createUser = async (req, res) => {
                         <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
                             <p><strong>Email:</strong> ${email}</p>
                             <p><strong>Password:</strong> ${password}</p>
+                            <p><strong>IMEI(s):</strong> ${newUser.imei.join(', ')}</p>
                         </div>
                         <p>Please keep this information secure and consider changing your password after your first login.</p>
                         <p>You can log in by visiting our website or mobile app.</p>
@@ -160,7 +163,7 @@ exports.editUser = async (req, res) => {
         // Update user fields if provided
         if (name) user.name = name;
         if (email) user.email = email;
-        if (imei) user.imei = imei;
+        if (imei) user.imei = Array.isArray(imei) ? imei : [imei]; // Ensure IMEI is stored as an array
         
         // If password is being updated, hash it
         if (password) {
@@ -205,55 +208,64 @@ exports.getUserbyID = async (req, res) => {
 // Function to get device data from BodyTrace API
 exports.getDeviceData = async (req, res) => {
     try {
-        const { imei } = req.params;
+        const { imeis } = req.body; // Accept IMEIs as an array in the request body
         const { limit, from, _, timezone } = req.query;
 
-        // Validate IMEI (15 digits)
-        if (!/^\d{15}$/.test(imei)) {
-            return res.status(400).json({ error: 'Invalid IMEI format' });
+        // Validate IMEIs
+        if (!Array.isArray(imeis) || imeis.some(imei => !/^\d{15}$/.test(imei))) {
+            return res.status(400).json({ error: 'Invalid IMEI format. Ensure all IMEIs are 15-digit numbers.' });
         }
 
         // Get credentials from environment variables
         const authString = `${process.env.BODYTRACE_USER}:${process.env.BODYTRACE_PASS}`;
         const authToken = Buffer.from(authString).toString('base64');
 
-        const response = await axios.get(
-            `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
-            {
-                params: {
-                    limit: limit || 50,
-                    from: from || 1,
-                    _: _ || Date.now()
-                },
-                headers: {
-                    'Authorization': `Basic ${authToken}`,
-                    'Accept': 'application/json',
-                    'User-Agent': 'Your-App-Name/1.0',
-                    'Origin': 'https://console.bodytrace.com',
-                    'Referer': 'https://console.bodytrace.com/'
+        const allDeviceData = [];
+
+        // Fetch data for each IMEI
+        for (const imei of imeis) {
+            const response = await axios.get(
+                `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
+                {
+                    params: {
+                        limit: limit || 50,
+                        from: from || 1,
+                        _: _ || Date.now()
+                    },
+                    headers: {
+                        'Authorization': `Basic ${authToken}`,
+                        'Accept': 'application/json',
+                        'User-Agent': 'Your-App-Name/1.0',
+                        'Origin': 'https://console.bodytrace.com',
+                        'Referer': 'https://console.bodytrace.com/'
+                    }
                 }
-            }
-        );
+            );
 
-        console.log('Proxy response:', response.data);
+            console.log(`Data for IMEI ${imei}:`, response.data);
 
-        // Process the response to include human-readable date-time and additional data
-        const processedData = response.data.map(entry => ({
-            ...entry,
-            dateTime: timezone ? moment(entry.ts).tz(timezone).format() : new Date(entry.ts).toISOString(),
-            batteryVoltage: entry.batteryVoltage,
-            signalStrength: entry.signalStrength,
-            rssi: entry.rssi,
-            deviceId: entry.deviceId
-        }));
+            // Process the response to include human-readable date-time and additional data
+            const processedData = response.data.map(entry => ({
+                ...entry,
+                imei, // Include the IMEI in the response
+                dateTime: timezone ? moment(entry.ts).tz(timezone).format() : new Date(entry.ts).toISOString(),
+                batteryVoltage: entry.batteryVoltage,
+                signalStrength: entry.signalStrength,
+                rssi: entry.rssi,
+                deviceId: entry.deviceId
+            }));
 
-        // Forward the processed response
-        res.json(processedData);
+            allDeviceData.push(...processedData);
+        }
 
+        // Sort the combined data by timestamp (latest first)
+        const sortedData = allDeviceData.sort((a, b) => b.ts - a.ts);
+
+        res.status(200).json(sortedData);
     } catch (error) {
-        console.error('Proxy error:', error);
+        console.error('Error fetching device data:', error);
         res.status(error.response?.status || 500).json({
-            error: error.response?.data?.error || 'Proxy error'
+            error: error.response?.data?.error || 'Error fetching device data'
         });
     }
 };
@@ -295,70 +307,67 @@ exports.listUsers = async (req, res) => {
 
 exports.getFilteredDeviceData = async (req, res) => {
     try {
-        const { imei } = req.params;
-        const { startDate, endDate, page = 1, limit = 10, sortBy = 'ts', order = 'asc' } = req.body;
+        const { imeis } = req.body; // Accept IMEIs as an array in the request body
+        const { startDate, endDate, page = 1, limit = 10, sortBy = 'ts', order = 'desc' } = req.body; // Default order to 'desc'
 
-        console.log('Request Parameters:', { imei, startDate, endDate, page, limit, sortBy, order });
+        console.log('Request Parameters:', { imeis, startDate, endDate, page, limit, sortBy, order });
 
-        // Validate IMEI (15 digits)
-        if (!/^\d{15}$/.test(imei)) {
-            return res.status(400).json({ error: 'Invalid IMEI format' });
+        // Validate IMEIs
+        if (!Array.isArray(imeis) || imeis.some(imei => !/^\d{15}$/.test(imei))) {
+            return res.status(400).json({ error: 'Invalid IMEI format. Ensure all IMEIs are 15-digit numbers.' });
         }
 
         // Get credentials from environment variables
         const authString = `${process.env.BODYTRACE_USER}:${process.env.BODYTRACE_PASS}`;
         const authToken = Buffer.from(authString).toString('base64');
 
-        // Build query parameters
-        const params = {};
-        if (startDate && endDate) {
-            const startTimestamp = new Date(startDate).getTime();
-            const endTimestamp = new Date(endDate).getTime();
+        const allFilteredData = [];
 
-            if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
-                return res.status(400).json({ error: 'Invalid date format' });
+        // Fetch and filter data for each IMEI
+        for (const imei of imeis) {
+            const params = {};
+            if (startDate && endDate) {
+                const startTimestamp = new Date(startDate).getTime();
+                const endTimestamp = new Date(endDate).getTime();
+
+                if (isNaN(startTimestamp) || isNaN(endTimestamp)) {
+                    return res.status(400).json({ error: 'Invalid date format' });
+                }
+
+                params.from = startTimestamp;
+                params.to = endTimestamp;
             }
 
-            params.from = startTimestamp;
-            params.to = endTimestamp;
+            const response = await axios.get(
+                `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
+                {
+                    params,
+                    headers: {
+                        'Authorization': `Basic ${authToken}`,
+                        'Accept': 'application/json',
+                        'User-Agent': 'Your-App-Name/1.0',
+                        'Origin': 'https://console.bodytrace.com',
+                        'Referer': 'https://console.bodytrace.com/',
+                    },
+                }
+            );
 
-            console.log('Date Range:', { startTimestamp, endTimestamp });
+            console.log(`Data for IMEI ${imei}:`, response.data);
+
+            // Process and filter the response
+            const processedData = response.data.map(entry => ({
+                ...entry,
+                imei, // Include the IMEI in the response
+                dateTime: new Date(entry.ts).toISOString(),
+            }));
+
+            const filteredData = processedData.filter(entry => entry.values && entry.values.weight !== undefined);
+
+            allFilteredData.push(...filteredData);
         }
 
-        console.log('Query Parameters:', params);
-
-        // Fetch all data from BodyTrace API
-        const response = await axios.get(
-            `https://us.data.bodytrace.com/1/device/${imei}/datamessages`,
-            {
-                params,
-                headers: {
-                    'Authorization': `Basic ${authToken}`,
-                    'Accept': 'application/json',
-                    'User-Agent': 'Your-App-Name/1.0',
-                    'Origin': 'https://console.bodytrace.com',
-                    'Referer': 'https://console.bodytrace.com/',
-                },
-            }
-        );
-
-        console.log('API Response Data:', response.data);
-
-        // Process the response to include human-readable date-time and additional data
-        const processedData = response.data.map(entry => ({
-            ...entry,
-            dateTime: new Date(entry.ts).toISOString(),
-        }));
-
-        console.log('Processed Data:', processedData);
-
-        // Filter data to include only entries with the `values` field and `weight` property
-        const filteredData = processedData.filter(entry => entry.values && entry.values.weight !== undefined);
-
-        console.log('Filtered Data:', filteredData);
-
-        // Sort the filtered data
-        const sortedData = filteredData.sort((a, b) => {
+        // Sort the combined data (latest first)
+        const sortedData = allFilteredData.sort((a, b) => {
             if (order === 'asc') {
                 return a[sortBy] > b[sortBy] ? 1 : -1;
             } else {
@@ -366,19 +375,15 @@ exports.getFilteredDeviceData = async (req, res) => {
             }
         });
 
-        console.log('Sorted Data:', sortedData);
-
-        // Apply pagination to the sorted data
+        // Apply pagination
         const offset = (page - 1) * limit;
         const paginatedData = sortedData.slice(offset, offset + limit);
 
-        console.log('Paginated Data:', paginatedData);
-
         res.status(200).json({
-            totalCount: filteredData.length, // Total number of filtered records
-            totalPages: Math.ceil(filteredData.length / limit), // Total pages
-            currentPage: page, // Current page
-            data: paginatedData, // Filtered, sorted, and paginated data
+            totalCount: allFilteredData.length,
+            totalPages: Math.ceil(allFilteredData.length / limit),
+            currentPage: page,
+            data: paginatedData,
         });
     } catch (error) {
         console.error('Error fetching filtered device data:', error.message);

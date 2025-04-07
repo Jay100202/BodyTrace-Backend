@@ -12,24 +12,31 @@ router.post('/login', userController.loginUser);
 // Route to fetch user data
 router.get('/:id', userController.getUserData);
 
-router.put("/users/:id", userController.editUser)
+// Route to edit a user
+router.put('/users/:id', userController.editUser);
 
 // Route to fetch device data for a user
 router.get('/:id/getuserbyid', userController.getUserbyID);
 
-// Route to fetch device data from BodyTrace API
-router.get('/device/:imei', userController.getDeviceData);
+// Route to fetch device data from BodyTrace API (updated to accept multiple IMEIs)
+router.post('/device/data', userController.getDeviceData);
 
-router.post("/list/user", userController.listUsers)
+// Route to list users with pagination, sorting, and filtering
+router.post('/list/user', userController.listUsers);
 
-router.post("/device/:imei/filtered-data", userController.getFilteredDeviceData)
+// Route to fetch filtered device data (updated to accept multiple IMEIs)
+router.post('/device/filtered-data', userController.getFilteredDeviceData);
 
-router.post("/device/:imei/downloadCSV", userController.generateDeviceDataCsv)
+// Route to download filtered device data as CSV (updated to accept multiple IMEIs)
+router.post('/device/downloadCSV', userController.generateDeviceDataCsv);
 
-router.post("/request-password-reset", userController.requestPasswordReset);
+// Route to request a password reset
+router.post('/request-password-reset', userController.requestPasswordReset);
 
-router.post("/reset-password", userController.resetPassword);
+// Route to reset a password
+router.post('/reset-password', userController.resetPassword);
 
-router.post("/change-password", userController.changePassword);
+// Route to change a password
+router.post('/change-password', userController.changePassword);
 
 module.exports = router;

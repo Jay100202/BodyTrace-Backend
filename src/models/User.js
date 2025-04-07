@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema({
         required: true
     },
     imei: {
-        type: String,
+        type: [String], // Change imei to an array of strings
         required: true
     },
     resetToken: String, // Token for password reset
