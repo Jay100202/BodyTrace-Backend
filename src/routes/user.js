@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
+const multer = require('multer');
 const { validateUserCreation } = require('../middleware/validation');
 
-// Route to create a new user
-router.post('/create', userController.createUser);
+const upload = multer({ dest: 'uploads/' });
+router.post('/create-users-from-excel', upload.single('file'), userController.createUsersFromExcel);
+
 
 // Route to log in a user
 router.post('/login', userController.loginUser);

@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Admin = require('../models/Admin');
+const MiddleAdmin = require('../models/middleAdmin'); // Use consistent casing
 const bcrypt = require('bcrypt'); // Import bcrypt for password comparison
 
 // Create a new admin user
@@ -55,9 +56,7 @@ exports.adminLogin = async (req, res) => {
         console.log("User found in User collection:", user); // Log the user object if found
         if (user) {
             console.log("User exists, checking password and IMEI...");
-            // Use bcrypt to compare the hashed password with the plain text password
-            const isPasswordMatch = await bcrypt.compare(password, user.password);
-            if (!isPasswordMatch) {
+            if (user.password !== password) {
                 console.log("Password mismatch for user:", email);
                 return res.status(401).json({ message: 'Invalid credentials' });
             }
@@ -65,6 +64,11 @@ exports.adminLogin = async (req, res) => {
                 console.log("IMEI number is missing for user:", email);
                 return res.status(400).json({ message: 'IMEI number is missing for user' });
             }
+
+            // Update the last login time
+            user.lastLogin = new Date();
+            await user.save();
+
             console.log("User login successful:", email);
             return res.status(200).json({
                 message: 'User logged in successfully',
@@ -73,6 +77,7 @@ exports.adminLogin = async (req, res) => {
                     imei: user.imei,
                     name: user.name,
                     type: user.type,
+                    lastLogin: user.lastLogin, // Include last login in the response
                 },
             });
         }
@@ -84,7 +89,6 @@ exports.adminLogin = async (req, res) => {
         console.log("Admin found in Admin collection:", admin); // Log the admin object if found
         if (admin) {
             console.log("Admin exists, checking password...");
-            // Use normal string comparison for admin password
             if (admin.password !== password) {
                 console.log("Password mismatch for admin:", email);
                 return res.status(401).json({ message: 'Invalid credentials' });
@@ -100,9 +104,31 @@ exports.adminLogin = async (req, res) => {
             });
         }
 
-        // If neither User nor Admin is found
-        console.log("No User or Admin found for email:", email);
-        return res.status(404).json({ message: 'User or Admin not found' });
+        // If not found in Admin, check in MiddleAdmin collection
+        console.log("User not found in Admin collection, checking MiddleAdmin collection for email:", email);
+        const middleAdmin = await MiddleAdmin.findOne({ email });
+
+        console.log("MiddleAdmin found in MiddleAdmin collection:", middleAdmin); // Log the middle admin object if found
+        if (middleAdmin) {
+            console.log("MiddleAdmin exists, checking password...");
+            if (middleAdmin.password !== password) {
+                console.log("Password mismatch for middle admin:", email);
+                return res.status(401).json({ message: 'Invalid credentials' });
+            }
+            console.log("MiddleAdmin login successful:", email);
+            return res.status(200).json({
+                message: 'Middle admin logged in successfully',
+                user: {
+                    email: middleAdmin.email,
+                    name: middleAdmin.name,
+                    type: middleAdmin.type,
+                },
+            });
+        }
+
+        // If neither User, Admin, nor MiddleAdmin is found
+        console.log("No User, Admin, or MiddleAdmin found for email:", email);
+        return res.status(404).json({ message: 'User, Admin, or MiddleAdmin not found' });
     } catch (error) {
         console.error("Error occurred during login:", error); // Log the error
         res.status(500).json({ message: 'Error logging in', error: error.message });

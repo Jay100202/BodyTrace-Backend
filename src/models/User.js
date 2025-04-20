@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const userSchema = new mongoose.Schema({
     name: {
         type: String,
-        required: true
+        default: 'User',
     },
     email: {
         type: String,
@@ -15,7 +15,7 @@ const userSchema = new mongoose.Schema({
         required: true
     },
     imei: {
-        type: [String], // Change imei to an array of strings
+        type: String, // Change imei to an array of strings
         required: true
     },
     resetToken: String, // Token for password reset
@@ -23,6 +23,10 @@ const userSchema = new mongoose.Schema({
     createdAt: {
         type: Date,
         default: Date.now
+    },
+    lastLogin: {
+        type: Date,
+        default:null
     },
     type: {
         type: String,
