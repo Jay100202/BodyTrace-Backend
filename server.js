@@ -12,7 +12,7 @@ const app = express();
 
 // CORS Configuration
 const corsOptions = {
-    origin: 'https://bodytrace-frontend.onrender.com', // Replace with your frontend's URL
+    origin: ['https://bodytrace-frontend.onrender.com',"http://localhost:3000"], // Replace with your frontend's URL
     methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
     credentials: true, // Allow cookies and credentials
 };

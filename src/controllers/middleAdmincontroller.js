@@ -10,10 +10,15 @@ const crypto = require('crypto'); // For generating random tokens
 
 exports.createMiddleAdminsFromExcel = async (req, res) => {
     try {
+        console.log('Starting createMiddleAdminsFromExcel process');
+        
         // Check if a file is uploaded
         if (!req.file) {
+            console.log('No file uploaded');
             return res.status(400).json({ message: 'No file uploaded' });
         }
+        
+        console.log('File uploaded successfully:', req.file.originalname);
 
         // Ensure the uploads directory exists
         const uploadsDir = path.join(__dirname, '../uploads');
@@ -27,43 +32,128 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const data = xlsx.utils.sheet_to_json(sheet);
+        console.log(`Excel file read successfully. Found ${data.length} rows of data.`);
 
-        // Process each row in the Excel file
-        const updatedData = [];
-        let counter = 1; // Counter to generate sequential email
-
-        // Function to generate a random 8-character password
-        const generateRandomPassword = () => {
-            return crypto.randomBytes(4).toString('hex').slice(0, 8); // Generate a random 8-character string
-        };
-
+        // Group data by name and organization to handle vertical IMEIs
+        const groupedData = {};
+        let currentKey = null; // Track the current name-organization pair
+        let currentName = null;
+        let currentOrg = null;
+        
         for (const row of data) {
-            const name = row.name; // Assuming the column name is "name"
-            const imeis = row.imeis; // Assuming the column name is "imeis" (comma-separated IMEIs)
-
-            if (!name || !imeis) {
-                continue; // Skip rows without a name or IMEIs
+            const name = row.name;
+            const imei = row.imeis; // Each row has a single IMEI in the 'imeis' column
+            const organization = row.organization;
+            
+            if (!imei) {
+                console.log('Skipping row with no IMEI:', JSON.stringify(row));
+                continue;
+            }
+            
+            // Convert any non-string IMEI to string and clean it
+            const cleanImei = String(imei).trim().replace(/\..*$/, ''); // Remove decimal points
+            
+            // Validate IMEI format
+            if (!/^\d{15}$/.test(cleanImei)) {
+                console.error(`Invalid IMEI format: ${imei}, cleaned to: ${cleanImei}`);
+                continue;
             }
 
-            // Split the IMEIs into an array and validate them
-            const assignedImeis = imeis.split(',').map(imei => imei.trim());
-            if (assignedImeis.some(imei => !/^\d{15}$/.test(imei))) {
-                console.error(`Invalid IMEI format in row: ${JSON.stringify(row)}`);
-                continue; // Skip rows with invalid IMEI formats
+            // If name is present, update current name and org
+            if (name) {
+                currentName = name;
+                currentOrg = organization || 'Default Organization';
+                // Create a unique key for each name + organization pair
+                currentKey = `${currentName}-${currentOrg}`;
+                
+                if (!groupedData[currentKey]) {
+                    console.log(`Creating new group for ${currentName} in ${currentOrg}`);
+                    groupedData[currentKey] = {
+                        name: currentName,
+                        organization: currentOrg,
+                        imeis: []
+                    };
+                }
+            } else if (!currentKey) {
+                // If there's no current key and no name in this row, we can't process this IMEI
+                console.log('Cannot process IMEI without a preceding name:', cleanImei);
+                continue;
             }
-
-            // Generate email and password
-            const email = `middleadmin${counter}@gmail.com`; // Sequential email
-            const password = generateRandomPassword(); // Generate a random 8-character password
-
-            // Save the middle admin to the database
-            const newMiddleAdmin = new MiddleAdmin({ name, email, password, imeis: assignedImeis });
-            await newMiddleAdmin.save();
-
-            // Add the generated data to the output
-            updatedData.push({ Name: name, Email: email, Password: password, IMEIs: assignedImeis.join(', ') });
-            counter++; // Increment the counter for the next middle admin
+            
+            // Add IMEI to the current group if not already in the array
+            if (!groupedData[currentKey].imeis.includes(cleanImei)) {
+                console.log(`Adding IMEI ${cleanImei} to ${currentName} in ${currentOrg}`);
+                groupedData[currentKey].imeis.push(cleanImei);
+            }
         }
+
+        console.log(`Grouped data into ${Object.keys(groupedData).length} name-organization pairs`);
+        
+        // Process each grouped entry
+        const updatedData = [];
+        let counter = await MiddleAdmin.countDocuments() + 1;
+        
+        const generateRandomPassword = () => {
+            return crypto.randomBytes(4).toString('hex').slice(0, 8);
+        };
+        
+        for (const key in groupedData) {
+            const { name, organization, imeis } = groupedData[key];
+            console.log(`Processing ${name} with ${imeis.length} IMEIs in organization ${organization}`);
+            
+            // Check if this admin with the same name and organization already exists
+            const existingAdmin = await MiddleAdmin.findOne({ name, organization });
+            
+            if (existingAdmin) {
+                console.log(`Found existing admin: ${name} in ${organization}`);
+                
+                // Merge IMEIs and remove duplicates
+                const updatedImeis = [...new Set([...existingAdmin.imeis, ...imeis])];
+                
+                // Update the admin record
+                existingAdmin.imeis = updatedImeis;
+                await existingAdmin.save();
+                
+                updatedData.push({
+                    Name: name,
+                    Organization: organization,
+                    Email: existingAdmin.email,
+                    Password: "********", // Mask password for security
+                    IMEIs: updatedImeis.join(', '),
+                    Status: "Updated"
+                });
+                
+                console.log(`Updated ${name} with ${updatedImeis.length} IMEIs`);
+            } else {
+                // Create new middle admin
+                const email = `middleadmin${counter}@gmail.com`;
+                const password = generateRandomPassword();
+                
+                const newMiddleAdmin = new MiddleAdmin({
+                    name,
+                    email,
+                    password,
+                    organization,
+                    imeis
+                });
+                
+                await newMiddleAdmin.save();
+                
+                updatedData.push({
+                    Name: name,
+                    Organization: organization,
+                    Email: email,
+                    Password: password,
+                    IMEIs: imeis.join(', '),
+                    Status: "Created"
+                });
+                
+                console.log(`Created new middle admin: ${name} with email ${email}`);
+                counter++;
+            }
+        }
+
+        console.log(`Processing complete. Created output data for ${updatedData.length} admins`);
 
         // Create a new Excel file with the updated data
         const newSheet = xlsx.utils.json_to_sheet(updatedData);
@@ -72,20 +162,28 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
 
         const outputPath = path.join(uploadsDir, 'middle_admins.xlsx');
         xlsx.writeFile(newWorkbook, outputPath);
+        console.log(`Output Excel file created at: ${outputPath}`);
 
         // Send the updated Excel file as a response
+        console.log('Sending file as download response');
         res.download(outputPath, 'middle_admins.xlsx', (err) => {
             if (err) {
                 console.error('Error sending file:', err);
                 res.status(500).json({ message: 'Error sending file' });
+            } else {
+                console.log('File sent successfully');
             }
 
             // Delete the temporary files
+            console.log('Cleaning up temporary files');
             fs.unlinkSync(filePath);
             fs.unlinkSync(outputPath);
+            console.log('Temporary files deleted');
         });
     } catch (error) {
-        console.error('Error processing Excel file:', error.message);
+        console.error('Error processing Excel file:', error);
+        console.error('Error details:', error.message);
+        console.error('Error stack:', error.stack);
         res.status(500).json({ message: 'Error processing Excel file', error: error.message });
     }
 };
