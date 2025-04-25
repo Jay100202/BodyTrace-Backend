@@ -41,4 +41,6 @@ router.post('/reset-password', userController.resetPassword);
 // Route to change a password
 router.post('/change-password', userController.changePassword);
 
+router.post("/reset-password-from-excel", upload.single("file"), userController.resetUsersPasswordFromExcel);
+
 module.exports = router;

@@ -605,3 +605,156 @@ exports.resetPassword = async (req, res) => {
         res.status(500).json({ message: 'Error resetting password', error: error.message });
     }
 };
+
+exports.resetUsersPasswordFromExcel = async (req, res) => {
+    try {
+        console.log('Starting resetUsersPasswordFromExcel process');
+        
+        // Check if a file is uploaded
+        if (!req.file) {
+            console.log('No file uploaded');
+            return res.status(400).json({ message: 'No file uploaded' });
+        }
+        
+        console.log('File uploaded successfully:', req.file.originalname);
+
+        // Ensure the uploads directory exists
+        const uploadsDir = path.join(__dirname, '../uploads');
+        if (!fs.existsSync(uploadsDir)) {
+            console.log('Creating uploads directory');
+            fs.mkdirSync(uploadsDir);
+        }
+
+        // Read the uploaded Excel file
+        const filePath = req.file.path;
+        const workbook = xlsx.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const data = xlsx.utils.sheet_to_json(sheet);
+        console.log(`Excel file read successfully. Found ${data.length} rows of data.`);
+
+        // Function to generate a random 8-character password
+        const generateRandomPassword = () => {
+            return crypto.randomBytes(4).toString('hex'); // Generates a random 8-character string
+        };
+
+        // Process each row in the Excel file
+        const updatedData = [];
+        for (const row of data) {
+            const email = row.email; // Column for email
+            const imei = row.imei;   // Column for IMEI (optional)
+            
+            console.log(`Processing row: Email=${email}, IMEI=${imei}`);
+            
+            if (!email) {
+                console.log('Skipping row due to missing email');
+                updatedData.push({ 
+                    Email: 'Missing',
+                    IMEI: imei || 'N/A', 
+                    Status: 'Skipped',
+                    Message: 'Email is required',
+                    NewPassword: 'N/A'
+                });
+                continue;
+            }
+            
+            try {
+                // Find the user by email
+                const user = await User.findOne({ email });
+                
+                if (!user) {
+                    console.log(`User not found with email: ${email}`);
+                    updatedData.push({ 
+                        Email: email, 
+                        IMEI: imei || 'N/A', 
+                        Status: 'Error',
+                        Message: 'User not found',
+                        NewPassword: 'N/A'
+                    });
+                    continue;
+                }
+                
+                // If IMEI is provided, verify it matches the user's IMEI (convert both to strings for comparison)
+                if (imei) {
+                    const imeiString = String(imei).trim();
+                    const userImeiString = String(user.imei).trim();
+                    
+                    console.log(`Comparing IMEIs: Input=${imeiString}, Stored=${userImeiString}`);
+                    
+                    if (imeiString !== userImeiString) {
+                        console.log(`IMEI mismatch for user ${email}: Expected ${userImeiString}, got ${imeiString}`);
+                        updatedData.push({ 
+                            Email: email, 
+                            IMEI: imei, 
+                            Status: 'Error',
+                            Message: `IMEI does not match user record (${userImeiString})`,
+                            NewPassword: 'N/A'
+                        });
+                        continue;
+                    }
+                }
+
+                // Generate a new password
+                const newPassword = generateRandomPassword();
+                console.log(`Generated new password for ${email}: ${newPassword}`);
+                
+                // Update the user's password (using plaintext password, not hashed)
+                user.password = newPassword;
+                await user.save();
+                console.log(`Password updated for user ${email}`);
+
+                // Add the updated user info to the output
+                updatedData.push({ 
+                    Email: email, 
+                    IMEI: user.imei || 'N/A', 
+                    Status: 'Success',
+                    Message: 'Password reset successfully',
+                    NewPassword: newPassword
+                });
+                
+            } catch (err) {
+                console.error(`Error processing row for ${email}:`, err.message);
+                updatedData.push({ 
+                    Email: email, 
+                    IMEI: imei || 'N/A', 
+                    Status: 'Error',
+                    Message: `Error: ${err.message}`,
+                    NewPassword: 'N/A'
+                });
+            }
+        }
+
+        console.log(`Processing complete. Total records processed: ${updatedData.length}`);
+
+        // Create a new Excel file with the updated data
+        const newSheet = xlsx.utils.json_to_sheet(updatedData);
+        const newWorkbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(newWorkbook, newSheet, 'Updated Passwords');
+
+        const outputPath = path.join(uploadsDir, 'updated_passwords.xlsx');
+        xlsx.writeFile(newWorkbook, outputPath);
+        console.log(`Output Excel file created at: ${outputPath}`);
+
+        // Send the updated Excel file as a response
+        console.log('Sending file as download response');
+        res.download(outputPath, 'updated_passwords.xlsx', (err) => {
+            if (err) {
+                console.error('Error sending file:', err);
+                res.status(500).json({ message: 'Error sending file' });
+            } else {
+                console.log('File sent successfully');
+            }
+
+            // Delete the temporary files
+            console.log('Cleaning up temporary files');
+            fs.unlinkSync(filePath);
+            fs.unlinkSync(outputPath);
+            console.log('Temporary files deleted');
+        });
+    } catch (error) {
+        console.error('Error processing Excel file:', error);
+        console.error('Error details:', error.message);
+        console.error('Error stack:', error.stack);
+        res.status(500).json({ message: 'Error processing Excel file', error: error.message });
+    }
+};

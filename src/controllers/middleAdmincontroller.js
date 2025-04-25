@@ -104,56 +104,57 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
             // Check if this admin with the same name and organization already exists
             const existingAdmin = await MiddleAdmin.findOne({ name, organization });
             
+            let adminEmail, adminPassword, adminStatus;
+            let finalImeis;
+            
             if (existingAdmin) {
                 console.log(`Found existing admin: ${name} in ${organization}`);
                 
                 // Merge IMEIs and remove duplicates
-                const updatedImeis = [...new Set([...existingAdmin.imeis, ...imeis])];
+                finalImeis = [...new Set([...existingAdmin.imeis, ...imeis])];
                 
                 // Update the admin record
-                existingAdmin.imeis = updatedImeis;
+                existingAdmin.imeis = finalImeis;
                 await existingAdmin.save();
                 
-                updatedData.push({
-                    Name: name,
-                    Organization: organization,
-                    Email: existingAdmin.email,
-                    Password: "********", // Mask password for security
-                    IMEIs: updatedImeis.join(', '),
-                    Status: "Updated"
-                });
+                adminEmail = existingAdmin.email;
+                adminPassword = "********"; // Mask password for security
+                adminStatus = "Updated";
                 
-                console.log(`Updated ${name} with ${updatedImeis.length} IMEIs`);
+                console.log(`Updated ${name} with ${finalImeis.length} IMEIs`);
             } else {
                 // Create new middle admin
-                const email = `middleadmin${counter}@gmail.com`;
-                const password = generateRandomPassword();
+                adminEmail = `middleadmin${counter}@gmail.com`;
+                adminPassword = generateRandomPassword();
+                adminStatus = "Created";
+                finalImeis = imeis;
                 
                 const newMiddleAdmin = new MiddleAdmin({
                     name,
-                    email,
-                    password,
+                    email: adminEmail,
+                    password: adminPassword,
                     organization,
-                    imeis
+                    imeis: finalImeis
                 });
                 
                 await newMiddleAdmin.save();
-                
+                console.log(`Created new middle admin: ${name} with email ${adminEmail}`);
+                counter++;
+            }
+            
+            // Add each IMEI as a separate row in the output data
+            for (const imei of finalImeis) {
                 updatedData.push({
                     Name: name,
                     Organization: organization,
-                    Email: email,
-                    Password: password,
-                    IMEIs: imeis.join(', '),
-                    Status: "Created"
+                    Email: adminEmail,
+                    Password: adminPassword,
+                    IMEI: imei,
                 });
-                
-                console.log(`Created new middle admin: ${name} with email ${email}`);
-                counter++;
             }
         }
 
-        console.log(`Processing complete. Created output data for ${updatedData.length} admins`);
+        console.log(`Processing complete. Created output data with ${updatedData.length} rows`);
 
         // Create a new Excel file with the updated data
         const newSheet = xlsx.utils.json_to_sheet(updatedData);
