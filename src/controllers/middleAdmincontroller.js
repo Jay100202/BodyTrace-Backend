@@ -7,7 +7,6 @@ const path = require('path');
 const axios = require('axios');
 const moment = require('moment-timezone'); // For timezone handling
 const crypto = require('crypto'); // For generating random tokens
-
 exports.createMiddleAdminsFromExcel = async (req, res) => {
     try {
         console.log('Starting createMiddleAdminsFromExcel process');
@@ -118,7 +117,7 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                 await existingAdmin.save();
                 
                 adminEmail = existingAdmin.email;
-                adminPassword = "********"; // Mask password for security
+                adminPassword = existingAdmin.password; // Use actual password, not masked
                 adminStatus = "Updated";
                 
                 console.log(`Updated ${name} with ${finalImeis.length} IMEIs`);
@@ -148,8 +147,9 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                     Name: name,
                     Organization: organization,
                     Email: adminEmail,
-                    Password: adminPassword,
+                    Password: adminPassword, // Now showing actual password
                     IMEI: imei,
+                    Status: adminStatus
                 });
             }
         }
@@ -167,7 +167,7 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
 
         // Send the updated Excel file as a response
         console.log('Sending file as download response');
-        res.download(outputPath, 'middle_admins.xlsx', (err) => {
+        res.download(outputPath, 'client.xlsx', (err) => {
             if (err) {
                 console.error('Error sending file:', err);
                 res.status(500).json({ message: 'Error sending file' });
