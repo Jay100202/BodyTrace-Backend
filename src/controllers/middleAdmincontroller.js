@@ -123,7 +123,7 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                 console.log(`Updated ${name} with ${finalImeis.length} IMEIs`);
             } else {
                 // Create new middle admin
-                adminEmail = `middleadmin${counter}@gmail.com`;
+                adminEmail = `clientlogin${counter}@gmail.com`;
                 adminPassword = generateRandomPassword();
                 adminStatus = "Created";
                 finalImeis = imeis;
