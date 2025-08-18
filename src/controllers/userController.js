@@ -19,14 +19,20 @@ const upload = multer({ dest: 'uploads/' });
 
 exports.createUsersFromExcel = async (req, res) => {
     try {
+        console.log('Starting createUsersFromExcel process');
+        
         // Check if a file is uploaded
         if (!req.file) {
+            console.log('No file uploaded');
             return res.status(400).json({ message: 'No file uploaded' });
         }
+        
+        console.log('File uploaded successfully:', req.file.originalname);
 
         // Ensure the uploads directory exists
         const uploadsDir = path.join(__dirname, '../uploads');
         if (!fs.existsSync(uploadsDir)) {
+            console.log('Creating uploads directory');
             fs.mkdirSync(uploadsDir);
         }
 
@@ -36,43 +42,122 @@ exports.createUsersFromExcel = async (req, res) => {
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const data = xlsx.utils.sheet_to_json(sheet);
+        console.log(`Excel file read successfully. Found ${data.length} rows of data.`);
 
-        const userCount = await User.countDocuments();
-        let counter = userCount + 1; // Start the counter from the next available number
+        // Get domain-specific counters
+        const domainCounters = {};
+        const domains = [...new Set(data.map(row => row['email domain']).filter(Boolean))];
+        
+        console.log(`Found ${domains.length} unique domains in input file`);
+        
+        // Initialize counters for each domain
+        for (const domain of domains) {
+            // Find the highest counter value for this domain in the database
+            const highestUser = await User.find({ email: { $regex: `^escale\\d+@${domain.replace('.', '\\.')}$` } })
+                .sort({ email: -1 })
+                .limit(1);
+                
+            let counter = 1; // Default start at 1
+            
+            if (highestUser.length > 0) {
+                // Extract number from email like escale5@domain.com -> 5
+                const match = highestUser[0].email.match(/escale(\d+)@/);
+                if (match && match[1]) {
+                    counter = parseInt(match[1]) + 1;
+                }
+            }
+            
+            domainCounters[domain] = counter;
+            console.log(`Initialized counter for ${domain} at ${counter}`);
+        }
 
-        // Function to generate a random 8-character password
+        // Function to generate a secure 12-character password
         const generateRandomPassword = () => {
-            return crypto.randomBytes(4).toString('hex'); // Generates a random 8-character string
+            const lowerCaseChars = 'abcdefghijklmnopqrstuvwxyz';
+            const upperCaseChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const numbers = '0123456789';
+            const specialChars = '!@#$%^&*_-+=';
+            
+            // Ensure at least one of each type
+            let password = '';
+            password += lowerCaseChars[Math.floor(Math.random() * lowerCaseChars.length)];
+            password += upperCaseChars[Math.floor(Math.random() * upperCaseChars.length)];
+            password += numbers[Math.floor(Math.random() * numbers.length)];
+            password += specialChars[Math.floor(Math.random() * specialChars.length)];
+            
+            // Fill the rest of the password (8 more characters)
+            const allChars = lowerCaseChars + upperCaseChars + numbers + specialChars;
+            for (let i = 0; i < 8; i++) {
+                password += allChars[Math.floor(Math.random() * allChars.length)];
+            }
+            
+            // Shuffle the password characters
+            return password.split('').sort(() => 0.5 - Math.random()).join('');
         };
 
         // Process each row in the Excel file
         const updatedData = [];
         for (const row of data) {
             const imei = row.imei; // Assuming the column name is "imei"
+            const domain = row['email domain']; // Get domain from Excel
+            
+            console.log(`Processing row: IMEI=${imei}, Domain=${domain}`);
+            
             if (!imei || isNaN(imei)) { // Validate that IMEI is a number
+                console.log(`Skipping row with invalid IMEI: ${imei}`);
                 continue; // Skip invalid IMEI rows
+            }
+
+            if (!domain) {
+                console.log(`Skipping row with missing domain: IMEI=${imei}`);
+                continue; // Skip rows without domain
             }
 
             // Check if the IMEI already exists in the database
             const existingUser = await User.findOne({ imei });
 
             if (existingUser) {
+                console.log(`Found existing user for IMEI ${imei}: ${existingUser.email}`);
                 // If the IMEI already exists, include its existing email and password in the output
-                updatedData.push({ IMEI: imei, Email: existingUser.email, Password: existingUser.password });
+                updatedData.push({ 
+                    IMEI: imei, 
+                    Email: existingUser.email, 
+                    Password: existingUser.password,
+                    Status: 'Existing' 
+                });
             } else {
-                // Generate new user credentials for the new IMEI
-                const email = `escale${counter}@gmail.com`; // Sequential email
-                const password = generateRandomPassword(); // Generate a random password
+                // Generate new user credentials using the domain-specific counter
+                const currentCounter = domainCounters[domain];
+                const email = `escale${currentCounter}@${domain}`;
+                const password = generateRandomPassword();
+                
+                console.log(`Creating new user for IMEI ${imei}: ${email}`);
 
                 // Save the new user to the database
-                const newUser = new User({ name: email, email, password, imei }); // Single IMEI
+                const newUser = new User({ 
+                    name: email, 
+                    email, 
+                    password, 
+                    imei 
+                });
+                
                 await newUser.save();
 
                 // Add the new user's credentials to the output
-                updatedData.push({ IMEI: imei, Email: email, Password: password });
-                counter++; // Increment the counter for the next user
+                updatedData.push({ 
+                    IMEI: imei, 
+                    Email: email, 
+                    Password: password,
+                    Status: 'Created' 
+                });
+                
+                // Increment the domain-specific counter
+                domainCounters[domain] = currentCounter + 1;
+                console.log(`Updated counter for ${domain} to ${domainCounters[domain]}`);
             }
         }
+
+        console.log(`Processing complete. Created output data with ${updatedData.length} rows`);
 
         // Create a new Excel file with the updated data
         const newSheet = xlsx.utils.json_to_sheet(updatedData);
@@ -81,20 +166,28 @@ exports.createUsersFromExcel = async (req, res) => {
 
         const outputPath = path.join(uploadsDir, 'updated_users.xlsx');
         xlsx.writeFile(newWorkbook, outputPath);
+        console.log(`Output Excel file created at: ${outputPath}`);
 
         // Send the updated Excel file as a response
+        console.log('Sending file as download response');
         res.download(outputPath, 'updated_users.xlsx', (err) => {
             if (err) {
                 console.error('Error sending file:', err);
                 res.status(500).json({ message: 'Error sending file' });
+            } else {
+                console.log('File sent successfully');
             }
 
             // Delete the temporary files
+            console.log('Cleaning up temporary files');
             fs.unlinkSync(filePath);
             fs.unlinkSync(outputPath);
+            console.log('Temporary files deleted');
         });
     } catch (error) {
-        console.error('Error processing Excel file:', error.message);
+        console.error('Error processing Excel file:', error);
+        console.error('Error details:', error.message);
+        console.error('Error stack:', error.stack);
         res.status(500).json({ message: 'Error processing Excel file', error: error.message });
     }
 };
@@ -330,11 +423,21 @@ exports.listUsers = async (req, res) => {
 
 exports.getFilteredDeviceData = async (req, res) => {
     try {
-        const { imei } = req.body; // Accept a single IMEI in the request body
-        const { startDate, endDate, page = 1, limit = 10, sortBy = 'ts', order = 'desc' } = req.body; // Default order to 'desc'
+        const { imei, search = '' } = req.body; // Added search parameter
+        const { startDate, endDate, page = 1, limit = 10, sortBy = 'ts', order = 'desc' } = req.body;
         
-        console.log("request body:", req.body); // Log the request body for debugging   
-        console.log('Request Parameters:', { imei, startDate, endDate, page, limit, sortBy, order });
+        console.log("request body:", req.body);
+        console.log('Request Parameters:', { imei, startDate, endDate, page, limit, sortBy, order, search });
+
+        // Add detailed logging for search
+        console.log('=== DEVICE DATA SEARCH DEBUG INFO ===');
+        console.log('Search parameter received:', search);
+        console.log('Search type:', typeof search);
+        console.log('Search length:', search ? search.length : 0);
+        console.log('Search after trim:', search ? search.trim() : 'empty');
+        console.log('Is search truthy?', !!search);
+        console.log('Is search not empty after trim?', search && search.trim() !== '');
+        console.log('=====================================');
 
         // Validate the IMEI
         if (!imei || !/^\d{15}$/.test(imei)) {
@@ -373,18 +476,61 @@ exports.getFilteredDeviceData = async (req, res) => {
             }
         );
 
-        console.log(`Data for IMEI ${imei}:`, response.data);
+        console.log(`Data fetched from API for IMEI ${imei}:`, response.data.length, 'entries');
 
         // Process and filter the response
         const processedData = response.data.map(entry => ({
             ...entry,
-            imei, // Include the IMEI in the response
+            imei,
             dateTime: new Date(entry.ts).toISOString(),
         }));
 
-        const filteredData = processedData.filter(entry => entry.values && entry.values.weight !== undefined);
+        console.log('Processed data entries:', processedData.length);
 
-        // Sort the combined data (latest first)
+        // Filter data to include only entries with weight values
+        let filteredData = processedData.filter(entry => entry.values && entry.values.weight !== undefined);
+        console.log('Entries with weight values:', filteredData.length);
+
+        // Apply search functionality if search term is provided
+        if (search && search.trim() !== '') {
+            console.log('APPLYING SEARCH FILTER to device data');
+            const searchTerm = search.toLowerCase();
+            console.log('Search term (lowercase):', searchTerm);
+            
+            const beforeSearchCount = filteredData.length;
+            
+            filteredData = filteredData.filter(entry => {
+                const imeiMatch = entry.imei.toString().includes(searchTerm);
+                const dateTimeMatch = entry.dateTime.toLowerCase().includes(searchTerm);
+                const weightMatch = entry.values.weight.toString().includes(searchTerm);
+                const unitMatch = entry.values.unit && entry.values.unit.toString().toLowerCase().includes(searchTerm);
+                const deviceIdMatch = entry.deviceId && entry.deviceId.toString().includes(searchTerm);
+                const tareMatch = entry.values.tare && entry.values.tare.toString().includes(searchTerm);
+                
+                const isMatch = imeiMatch || dateTimeMatch || weightMatch || unitMatch || deviceIdMatch || tareMatch;
+                
+                // Log first few matches for debugging
+                if (isMatch && filteredData.indexOf(entry) < 3) {
+                    console.log(`Match found in entry:`, {
+                        imei: imeiMatch,
+                        dateTime: dateTimeMatch,
+                        weight: weightMatch,
+                        unit: unitMatch,
+                        deviceId: deviceIdMatch,
+                        tare: tareMatch,
+                        values: entry.values
+                    });
+                }
+                
+                return isMatch;
+            });
+            
+            console.log(`Search results: ${beforeSearchCount} -> ${filteredData.length} entries`);
+        } else {
+            console.log('NO SEARCH FILTER APPLIED - using all weight data');
+        }
+
+        // Sort the combined data
         const sortedData = filteredData.sort((a, b) => {
             if (order === 'asc') {
                 return a[sortBy] > b[sortBy] ? 1 : -1;
@@ -393,14 +539,19 @@ exports.getFilteredDeviceData = async (req, res) => {
             }
         });
 
+        console.log('Data sorted by:', sortBy, order);
+
         // Apply pagination
         const offset = (page - 1) * limit;
         const paginatedData = sortedData.slice(offset, offset + limit);
 
-        console.log("totalCount:", filteredData.length);
-        console.log("totalPages:", Math.ceil(filteredData.length / limit));
-        console.log("currentPage:", page);
-        console.log("paginatedData:", paginatedData);
+        console.log("=== FINAL DEVICE DATA RESULTS ===");
+        console.log("Search term:", `"${search}"`);
+        console.log("Total count after search:", filteredData.length);
+        console.log("Total pages:", Math.ceil(filteredData.length / limit));
+        console.log("Current page:", page);
+        console.log("Paginated data entries:", paginatedData.length);
+        console.log("===============================");
 
         res.status(200).json({
             totalCount: filteredData.length,

@@ -7,6 +7,7 @@ const path = require('path');
 const axios = require('axios');
 const moment = require('moment-timezone'); // For timezone handling
 const crypto = require('crypto'); // For generating random tokens
+
 exports.createMiddleAdminsFromExcel = async (req, res) => {
     try {
         console.log('Starting createMiddleAdminsFromExcel process');
@@ -38,11 +39,13 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
         let currentKey = null; // Track the current name-organization pair
         let currentName = null;
         let currentOrg = null;
+        let currentEmail = null;
         
         for (const row of data) {
             const name = row.name;
             const imei = row.imeis; // Each row has a single IMEI in the 'imeis' column
             const organization = row.organization;
+            const email = row.email; // Get email from Excel sheet
             
             if (!imei) {
                 console.log('Skipping row with no IMEI:', JSON.stringify(row));
@@ -58,20 +61,26 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                 continue;
             }
 
-            // If name is present, update current name and org
+            // If name is present, update current name, org and email
             if (name) {
                 currentName = name;
                 currentOrg = organization || 'Default Organization';
+                currentEmail = email || null; // Use provided email or null
                 // Create a unique key for each name + organization pair
                 currentKey = `${currentName}-${currentOrg}`;
                 
                 if (!groupedData[currentKey]) {
-                    console.log(`Creating new group for ${currentName} in ${currentOrg}`);
+                    console.log(`Creating new group for ${currentName} in ${currentOrg} with email ${currentEmail || 'not provided'}`);
                     groupedData[currentKey] = {
                         name: currentName,
                         organization: currentOrg,
+                        email: currentEmail,
                         imeis: []
                     };
+                } else if (email && !groupedData[currentKey].email) {
+                    // Update email if it wasn't provided before but is now
+                    console.log(`Updating email for ${currentName} to ${email}`);
+                    groupedData[currentKey].email = email;
                 }
             } else if (!currentKey) {
                 // If there's no current key and no name in this row, we can't process this IMEI
@@ -92,12 +101,32 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
         const updatedData = [];
         let counter = await MiddleAdmin.countDocuments() + 1;
         
+        // Function to generate a secure 12-character password
         const generateRandomPassword = () => {
-            return crypto.randomBytes(4).toString('hex').slice(0, 8);
+            const lowerCaseChars = 'abcdefghijklmnopqrstuvwxyz';
+            const upperCaseChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const numbers = '0123456789';
+            const specialChars = '!@#$%^&*_-+=';
+            
+            // Ensure at least one of each type
+            let password = '';
+            password += lowerCaseChars[Math.floor(Math.random() * lowerCaseChars.length)];
+            password += upperCaseChars[Math.floor(Math.random() * upperCaseChars.length)];
+            password += numbers[Math.floor(Math.random() * numbers.length)];
+            password += specialChars[Math.floor(Math.random() * specialChars.length)];
+            
+            // Fill the rest of the password (8 more characters)
+            const allChars = lowerCaseChars + upperCaseChars + numbers + specialChars;
+            for (let i = 0; i < 8; i++) {
+                password += allChars[Math.floor(Math.random() * allChars.length)];
+            }
+            
+            // Shuffle the password characters
+            return password.split('').sort(() => 0.5 - Math.random()).join('');
         };
         
         for (const key in groupedData) {
-            const { name, organization, imeis } = groupedData[key];
+            const { name, organization, email, imeis } = groupedData[key];
             console.log(`Processing ${name} with ${imeis.length} IMEIs in organization ${organization}`);
             
             // Check if this admin with the same name and organization already exists
@@ -112,8 +141,12 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                 // Merge IMEIs and remove duplicates
                 finalImeis = [...new Set([...existingAdmin.imeis, ...imeis])];
                 
-                // Update the admin record
+                // Update the admin record with new email if provided
                 existingAdmin.imeis = finalImeis;
+                if (email && existingAdmin.email !== email) {
+                    console.log(`Updating email from ${existingAdmin.email} to ${email}`);
+                    existingAdmin.email = email;
+                }
                 await existingAdmin.save();
                 
                 adminEmail = existingAdmin.email;
@@ -123,7 +156,7 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
                 console.log(`Updated ${name} with ${finalImeis.length} IMEIs`);
             } else {
                 // Create new middle admin
-                adminEmail = `clientlogin${counter}@gmail.com`;
+                adminEmail = email || `clientlogin${counter}@gmail.com`; // Use provided email or generate one
                 adminPassword = generateRandomPassword();
                 adminStatus = "Created";
                 finalImeis = imeis;
@@ -167,7 +200,7 @@ exports.createMiddleAdminsFromExcel = async (req, res) => {
 
         // Send the updated Excel file as a response
         console.log('Sending file as download response');
-        res.download(outputPath, 'client.xlsx', (err) => {
+        res.download(outputPath, 'middle_admins.xlsx', (err) => {
             if (err) {
                 console.error('Error sending file:', err);
                 res.status(500).json({ message: 'Error sending file' });
@@ -195,7 +228,21 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
         const { email } = req.params; // Middle admin email from the request parameters
 
         console.log('Fetching users for middle admin with email:', email); // Log the email being processed
-        const { page = 1, limit = 10, sortBy = 'createdAt', order = 'desc' } = req.query; // Pagination and sorting options
+        const { page = 1, limit = 10, sortBy = 'createdAt', order = 'desc', search = '' } = req.query; // Added search parameter
+
+        // Add detailed logging for search
+        console.log('=== SEARCH DEBUG INFO ===');
+        console.log('Query parameters received:', req.query);
+        console.log('Search parameter:', search);
+        console.log('Search type:', typeof search);
+        console.log('Search length:', search ? search.length : 0);
+        console.log('Search after trim:', search ? search.trim() : 'empty');
+        console.log('Is search truthy?', !!search);
+        console.log('Is search not empty after trim?', search && search.trim() !== '');
+        console.log('========================');
+
+        // Validate sortBy parameter to prevent empty string
+        const validSortBy = sortBy && sortBy.trim() !== '' ? sortBy : 'createdAt';
 
         // Find the middle admin by email
         const middleAdmin = await MiddleAdmin.findOne({ email });
@@ -205,17 +252,45 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
 
         // Get the IMEIs assigned to the middle admin
         const assignedImeis = middleAdmin.imeis;
+        console.log('Assigned IMEIs count:', assignedImeis.length);
 
-        // Fetch users assigned to the IMEIs
-        const query = { imei: { $in: assignedImeis } };
-        const totalCount = await User.countDocuments(query); // Total number of users
+        // Build search query - keep original query structure and add search if provided
+        let query = { imei: { $in: assignedImeis } };
+        console.log('Base query:', JSON.stringify(query));
+        
+        // Add search functionality to the MongoDB query if search term is provided
+        if (search && search.trim() !== '') {
+            console.log('APPLYING SEARCH FILTER');
+            const searchRegex = new RegExp(search.trim(), 'i'); // Case-insensitive regex
+            console.log('Search regex:', searchRegex);
+            
+            query = {
+                ...query,
+                $or: [
+                    { name: searchRegex },
+                    { email: searchRegex },
+                    { imei: searchRegex }
+                ]
+            };
+            console.log('Query with search applied:', JSON.stringify(query));
+        } else {
+            console.log('NO SEARCH FILTER APPLIED - using base query only');
+        }
+
+        // Get total count with search applied
+        const totalCount = await User.countDocuments(query);
+        console.log('Total count from database:', totalCount);
+        
+        // Fetch users with search applied
         const users = await User.find(query)
             .select('-password') // Exclude the password field
-            .sort({ [sortBy]: order === 'asc' ? 1 : -1 }) // Sort by the specified field
+            .sort({ [validSortBy]: order === 'asc' ? 1 : -1 }) // Sort by the specified field
             .skip((page - 1) * limit) // Skip for pagination
             .limit(parseInt(limit)); // Limit the number of results
 
-        // Fetch the last reported data for each IMEI
+        console.log('Users fetched from database:', users.length);
+
+        // Fetch the last reported data for each IMEI (keep original functionality)
         const authString = `${process.env.BODYTRACE_USER}:${process.env.BODYTRACE_PASS}`;
         const authToken = Buffer.from(authString).toString('base64');
 
@@ -235,14 +310,41 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
                         }
                     );
 
-            
-
                     // Filter the data to include only entries with the `values` field
                     const filteredData = response.data.filter(entry => entry.values);
 
-
                     // Get the last entry with the `values` field or null if no such entry exists
                     const lastReportedData = filteredData.length > 0 ? filteredData[0] : null;
+
+                    // Apply additional search filter to device data if search term is provided
+                    if (search && search.trim() !== '' && lastReportedData) {
+                        console.log(`Checking device data search for user ${user.email} with search term "${search}"`);
+                        const searchTerm = search.toLowerCase();
+                        const weightMatch = lastReportedData.values.weight && lastReportedData.values.weight.toString().includes(searchTerm);
+                        const unitMatch = lastReportedData.values.unit && lastReportedData.values.unit.toString().toLowerCase().includes(searchTerm);
+                        const tareMatch = lastReportedData.values.tare && lastReportedData.values.tare.toString().includes(searchTerm);
+                        const deviceIdMatch = lastReportedData.deviceId && lastReportedData.deviceId.toString().includes(searchTerm);
+                        const dateTimeMatch = new Date(lastReportedData.ts).toISOString().toLowerCase().includes(searchTerm);
+                        
+                        console.log(`Device data matches for ${user.email}:`, {
+                            weight: weightMatch,
+                            unit: unitMatch,
+                            tare: tareMatch,
+                            deviceId: deviceIdMatch,
+                            dateTime: dateTimeMatch
+                        });
+                        
+                        // If search term doesn't match device data, still include user (since they matched user data)
+                        // This preserves the original behavior while adding device data search capability
+                        const deviceDataMatches = weightMatch || unitMatch || tareMatch || deviceIdMatch || dateTimeMatch;
+                        
+                        // Log for debugging
+                        if (!deviceDataMatches) {
+                            console.log(`User ${user.email} matched user data but not device data for search: "${search}"`);
+                        } else {
+                            console.log(`User ${user.email} matched both user data AND device data for search: "${search}"`);
+                        }
+                    }
 
                     return {
                         ...user.toObject(),
@@ -258,7 +360,15 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
             })
         );
 
-        // Respond with the paginated data including last reported data
+        console.log(`=== FINAL RESULTS ===`);
+        console.log(`Search term: "${search}"`);
+        console.log(`Users found: ${usersWithLastReportedData.length}`);
+        console.log(`Total count: ${totalCount}`);
+        console.log(`Current page: ${page}`);
+        console.log(`Total pages: ${Math.ceil(totalCount / limit)}`);
+        console.log(`====================`);
+
+        // Respond with the paginated data including last reported data (keep original response structure)
         res.status(200).json({
             totalCount,
             totalPages: Math.ceil(totalCount / limit),
