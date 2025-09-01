@@ -241,9 +241,6 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
         console.log('Is search not empty after trim?', search && search.trim() !== '');
         console.log('========================');
 
-        // Validate sortBy parameter to prevent empty string
-        const validSortBy = sortBy && sortBy.trim() !== '' ? sortBy : 'createdAt';
-
         // Find the middle admin by email
         const middleAdmin = await MiddleAdmin.findOne({ email });
         if (!middleAdmin) {
@@ -253,6 +250,14 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
         // Get the IMEIs assigned to the middle admin
         const assignedImeis = middleAdmin.imeis;
         console.log('Assigned IMEIs count:', assignedImeis.length);
+
+        // Create position map to preserve IMEI order
+        const imeiPositionMap = new Map();
+        assignedImeis.forEach((imei, index) => {
+            imeiPositionMap.set(imei, index);
+            imeiPositionMap.set(imei.trim(), index); // Also store trimmed version
+            imeiPositionMap.set(`${imei} `, index); // Also store with space
+        });
 
         // Build search query - keep original query structure and add search if provided
         let query = { imei: { $in: assignedImeis } };
@@ -277,28 +282,44 @@ exports.getUsersByMiddleAdminEmail = async (req, res) => {
             console.log('NO SEARCH FILTER APPLIED - using base query only');
         }
 
-        // Get total count with search applied
-        const totalCount = await User.countDocuments(query);
-        console.log('Total count from database:', totalCount);
+        // Fetch all users matching the criteria (for sorting by IMEI position)
+        const allMatchingUsers = await User.find(query).select('-password');
+        console.log('Total matching users from database:', allMatchingUsers.length);
         
-        // Fetch users with search applied
-        const users = await User.find(query)
-            .select('-password') // Exclude the password field
-            .sort({ [validSortBy]: order === 'asc' ? 1 : -1 }) // Sort by the specified field
-            .skip((page - 1) * limit) // Skip for pagination
-            .limit(parseInt(limit)); // Limit the number of results
-
-        console.log('Users fetched from database:', users.length);
-
-        // Fetch the last reported data for each IMEI (keep original functionality)
+        // Sort users based on their IMEI's position in the assignedImeis array
+        allMatchingUsers.sort((a, b) => {
+            const posA = imeiPositionMap.get(a.imei) ?? imeiPositionMap.get(a.imei.trim());
+            const posB = imeiPositionMap.get(b.imei) ?? imeiPositionMap.get(b.imei.trim());
+            
+            // If position not found, put at end
+            if (posA === undefined) return 1;
+            if (posB === undefined) return -1;
+            
+            return posA - posB; // Sort by IMEI position
+        });
+        
+        // Get the total count (for pagination info)
+        const totalCount = allMatchingUsers.length;
+        
+        // Apply manual pagination after sorting
+        const startIndex = (page - 1) * parseInt(limit);
+        const endIndex = startIndex + parseInt(limit);
+        const paginatedUsers = allMatchingUsers.slice(startIndex, endIndex);
+        
+        console.log('Users fetched for current page:', paginatedUsers.length);
+        
+        // Fetch the last reported data for each IMEI
         const authString = `${process.env.BODYTRACE_USER}:${process.env.BODYTRACE_PASS}`;
         const authToken = Buffer.from(authString).toString('base64');
 
         const usersWithLastReportedData = await Promise.all(
-            users.map(async (user) => {
+            paginatedUsers.map(async (user) => {
                 try {
+                    // Normalize IMEI by trimming spaces
+                    const normalizedImei = String(user.imei).trim();
+                    
                     const response = await axios.get(
-                        `https://us.data.bodytrace.com/1/device/${user.imei}/datamessages`,
+                        `https://us.data.bodytrace.com/1/device/${normalizedImei}/datamessages`,
                         {
                             headers: {
                                 'Authorization': `Basic ${authToken}`,
