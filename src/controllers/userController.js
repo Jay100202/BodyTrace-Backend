@@ -52,23 +52,33 @@ exports.createUsersFromExcel = async (req, res) => {
         
         // Initialize counters for each domain
         for (const domain of domains) {
-            // Find the highest counter value for this domain in the database
-            const highestUser = await User.find({ email: { $regex: `^escale\\d+@${domain.replace('.', '\\.')}$` } })
-                .sort({ email: -1 })
-                .limit(1);
+            try {
+                // Get all existing users with this domain to find the highest counter
+                const regex = new RegExp(`^escale(\\d+)@${domain.replace(/\./g, '\\.')}$`, 'i');
+                const existingUsers = await User.find({ email: { $regex: regex } });
                 
-            let counter = 1; // Default start at 1
-            
-            if (highestUser.length > 0) {
-                // Extract number from email like escale5@domain.com -> 5
-                const match = highestUser[0].email.match(/escale(\d+)@/);
-                if (match && match[1]) {
-                    counter = parseInt(match[1]) + 1;
+                console.log(`Found ${existingUsers.length} existing users for domain ${domain}`);
+                
+                // Find the highest counter
+                let highestCounter = 0;
+                for (const user of existingUsers) {
+                    const match = user.email.match(/escale(\d+)@/i);
+                    if (match && match[1]) {
+                        const counter = parseInt(match[1], 10);
+                        if (counter > highestCounter) {
+                            highestCounter = counter;
+                        }
+                    }
                 }
+                
+                // Start from the next available counter
+                domainCounters[domain] = highestCounter + 1;
+                
+                console.log(`Initialized counter for ${domain} at ${domainCounters[domain]}`);
+            } catch (error) {
+                console.error(`Error finding highest counter for ${domain}:`, error);
+                domainCounters[domain] = 1; // Default to 1 if there's an error
             }
-            
-            domainCounters[domain] = counter;
-            console.log(`Initialized counter for ${domain} at ${counter}`);
         }
 
         // Function to generate a secure 12-character password
@@ -95,65 +105,137 @@ exports.createUsersFromExcel = async (req, res) => {
             return password.split('').sort(() => 0.5 - Math.random()).join('');
         };
 
+        // Create a set to track which IMEIs have been processed
+        const processedIMEIs = new Set();
+        
         // Process each row in the Excel file
         const updatedData = [];
         for (const row of data) {
-            const imei = row.imei; // Assuming the column name is "imei"
+            const imei = String(row.imei).trim(); // Convert to string and trim
             const domain = row['email domain']; // Get domain from Excel
             
             console.log(`Processing row: IMEI=${imei}, Domain=${domain}`);
             
-            if (!imei || isNaN(imei)) { // Validate that IMEI is a number
+            if (!imei || isNaN(Number(imei))) { // Validate that IMEI is a number
                 console.log(`Skipping row with invalid IMEI: ${imei}`);
+                updatedData.push({ 
+                    IMEI: imei || 'Invalid', 
+                    Email: 'N/A', 
+                    Password: 'N/A',
+                    Status: 'Skipped - Invalid IMEI' 
+                });
                 continue; // Skip invalid IMEI rows
             }
 
             if (!domain) {
                 console.log(`Skipping row with missing domain: IMEI=${imei}`);
+                updatedData.push({ 
+                    IMEI: imei, 
+                    Email: 'N/A', 
+                    Password: 'N/A',
+                    Status: 'Skipped - Missing Domain' 
+                });
                 continue; // Skip rows without domain
             }
 
-            // Check if the IMEI already exists in the database
-            const existingUser = await User.findOne({ imei });
-
-            if (existingUser) {
-                console.log(`Found existing user for IMEI ${imei}: ${existingUser.email}`);
-                // If the IMEI already exists, include its existing email and password in the output
+            // Skip duplicate IMEIs in the same file
+            if (processedIMEIs.has(imei)) {
+                console.log(`Skipping duplicate IMEI in the file: ${imei}`);
                 updatedData.push({ 
                     IMEI: imei, 
-                    Email: existingUser.email, 
-                    Password: existingUser.password,
-                    Status: 'Existing' 
+                    Email: 'N/A', 
+                    Password: 'N/A',
+                    Status: 'Skipped - Duplicate IMEI in file' 
                 });
-            } else {
-                // Generate new user credentials using the domain-specific counter
-                const currentCounter = domainCounters[domain];
-                const email = `escale${currentCounter}@${domain}`;
-                const password = generateRandomPassword();
-                
-                console.log(`Creating new user for IMEI ${imei}: ${email}`);
+                continue;
+            }
 
-                // Save the new user to the database
-                const newUser = new User({ 
-                    name: email, 
-                    email, 
-                    password, 
-                    imei 
-                });
-                
-                await newUser.save();
+            // Mark this IMEI as processed
+            processedIMEIs.add(imei);
 
-                // Add the new user's credentials to the output
+            try {
+                // Check if the IMEI already exists in the database
+                const existingUser = await User.findOne({ imei });
+
+                if (existingUser) {
+                    console.log(`Found existing user for IMEI ${imei}: ${existingUser.email}`);
+                    // If the IMEI already exists, include its existing email and password in the output
+                    updatedData.push({ 
+                        IMEI: imei, 
+                        Email: existingUser.email, 
+                        Password: existingUser.password,
+                        Status: 'Existing' 
+                    });
+                } else {
+                    // Generate new user with unique email
+                    let emailCreated = false;
+                    let attempts = 0;
+                    let email, password;
+                    
+                    while (!emailCreated && attempts < 10) {
+                        // Generate new user credentials using the domain-specific counter
+                        const currentCounter = domainCounters[domain];
+                        email = `escale${currentCounter}@${domain}`;
+                        password = generateRandomPassword();
+                        
+                        console.log(`Attempting to create user with email: ${email}`);
+                        
+                        // Check if email already exists
+                        const emailExists = await User.findOne({ email });
+                        
+                        if (emailExists) {
+                            console.log(`Email ${email} already exists, incrementing counter`);
+                            domainCounters[domain] = currentCounter + 1;
+                            attempts++;
+                        } else {
+                            emailCreated = true;
+                        }
+                    }
+                    
+                    if (!emailCreated) {
+                        console.log(`Failed to create unique email for IMEI ${imei} after ${attempts} attempts`);
+                        updatedData.push({ 
+                            IMEI: imei, 
+                            Email: 'N/A', 
+                            Password: 'N/A',
+                            Status: 'Error - Could not generate unique email' 
+                        });
+                        continue;
+                    }
+                    
+                    console.log(`Creating new user for IMEI ${imei}: ${email}`);
+
+                    // Save the new user to the database
+                    const newUser = new User({ 
+                        name: email, 
+                        email, 
+                        password, 
+                        imei,
+                        type: "user"
+                    });
+                    
+                    await newUser.save();
+
+                    // Add the new user's credentials to the output
+                    updatedData.push({ 
+                        IMEI: imei, 
+                        Email: email, 
+                        Password: password,
+                        Status: 'Created' 
+                    });
+                    
+                    // Increment the domain-specific counter
+                    domainCounters[domain] = domainCounters[domain] + 1;
+                    console.log(`Updated counter for ${domain} to ${domainCounters[domain]}`);
+                }
+            } catch (error) {
+                console.error(`Error processing IMEI ${imei}:`, error);
                 updatedData.push({ 
                     IMEI: imei, 
-                    Email: email, 
-                    Password: password,
-                    Status: 'Created' 
+                    Email: 'N/A', 
+                    Password: 'N/A',
+                    Status: `Error - ${error.message}` 
                 });
-                
-                // Increment the domain-specific counter
-                domainCounters[domain] = currentCounter + 1;
-                console.log(`Updated counter for ${domain} to ${domainCounters[domain]}`);
             }
         }
 
